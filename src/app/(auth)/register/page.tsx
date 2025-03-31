@@ -1,10 +1,8 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Eye, EyeOff } from "lucide-react";
-// import { useAppDispatch, useAppSelector } from "@/lib/store";
-// import { registerUser } from "@/lib/features/auth/authSlice";
 import { useRouter } from "next/navigation";
-import { useAppDispatch, useAppSelector,RootState } from "@/lib/store/store";
+import { useAppDispatch, useAppSelector } from "@/lib/store/store";
 import { registerUser } from "@/lib/store/feature/auth/auth-slice";
 
 interface RegisterFormData {
@@ -17,35 +15,60 @@ const RegisterForm = () => {
   const [formData, setFormData] = useState<RegisterFormData>({
     name: "",
     email: "",
-    password: ""
+    password: "",
   });
   const [showPassword, setShowPassword] = useState(false);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [isCodeSent, setIsCodeSent] = useState(false);
   const dispatch = useAppDispatch();
   const router = useRouter();
   const { loading, error } = useAppSelector((state) => state.auth);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
+    setFormData((prev) => ({
       ...prev,
-      [name]: value
+      [name]: value,
     }));
   };
 
+  const handleVerificationCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setVerificationCode(e.target.value);
+  };
+
+  const sendVerificationCode = async () => {
+    try {
+      const response = await fetch("/api/auth/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: formData.email }),
+      });
+
+      if (response.ok) {
+        setIsCodeSent(true);
+        alert("Verification code sent to your email. Please check your inbox.");
+      } else {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Failed to send verification code");
+      }
+    } catch (error) {
+      console.error("Error sending verification code:", error);
+      alert(error instanceof Error ? error.message : "Failed to send verification code");
+    }
+  };
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    try {
-      const result = await dispatch(registerUser(formData));
-      
-      if (registerUser.fulfilled.match(result)) {
-        // router.push("/dashboard"); // Redirect after successful registration
-        console.log("hi")
-      }
-    } catch (error) {
-      console.error("Registration failed:", error);
-    }
-  };
+    // Ensure string type before sending
+    const payload = {
+      name: formData.name,
+      email: formData.email,
+      password: formData.password,
+      verificationCode: String(verificationCode) // Explicit conversion
+    };
+  
+    await dispatch(registerUser(payload));
+  }
 
   return (
     <>
@@ -101,15 +124,44 @@ const RegisterForm = () => {
           </button>
         </div>
 
-        <button 
-          type="submit" 
-          disabled={loading}
-          className={`w-full bg-blue-500 text-white p-2 rounded-md ${
-            loading ? 'opacity-70 cursor-not-allowed' : 'hover:bg-blue-600'
-          } transition-colors`}
-        >
-          {loading ? 'Registering...' : 'Register'}
-        </button>
+        {/* Verification Code Input */}
+        {isCodeSent && (
+          <div className="space-y-2">
+            <input
+              type="text"
+              name="verificationCode"
+              placeholder="Enter verification code"
+              value={verificationCode}
+              onChange={handleVerificationCodeChange}
+              className="w-full p-2 border rounded-md"
+              required
+            />
+          </div>
+        )}
+
+        {/* Send Verification Code Button */}
+        {!isCodeSent ? (
+          <button
+            type="button"
+            onClick={sendVerificationCode}
+            disabled={!formData.email}
+            className={`w-full bg-blue-500 text-white p-2 rounded-md ${
+              !formData.email ? "opacity-50 cursor-not-allowed" : "hover:bg-blue-600"
+            } transition-colors`}
+          >
+            Send Verification Code
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={loading}
+            className={`w-full bg-blue-500 text-white p-2 rounded-md ${
+              loading ? "opacity-70 cursor-not-allowed" : "hover:bg-blue-600"
+            } transition-colors`}
+          >
+            {loading ? "Registering..." : "Register"}
+          </button>
+        )}
       </form>
     </>
   );

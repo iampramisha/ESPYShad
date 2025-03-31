@@ -1,64 +1,78 @@
 import { NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { PrismaClient } from '@prisma/client';
-
-// 1. Create a dedicated config file for environment variables
-const getJwtSecret = (): string => {
-  const secret = process.env.JWT_SECRET;
-  if (!secret) {
-    throw new Error('JWT_SECRET is not defined in environment variables');
-  }
-  return secret;
-};
-
-const JWT_SECRET = getJwtSecret(); // This will always return string or throw error
+import { prisma } from '@/lib/prisma';
 
 export async function POST(request: Request) {
-  const prisma = new PrismaClient();
-  
   try {
-    const { email, password } = await request.json();
-    
+    const { email, password, rememberMe = false } = await request.json();
+
+    // Validate input
+    if (!email || !password) {
+      return NextResponse.json(
+        { error: "Email and password are required" }, 
+        { status: 400 }
+      );
+    }
+
+    // Find user
     const user = await prisma.user.findUnique({
       where: { email },
       select: { id: true, name: true, email: true, password: true }
     });
 
-    if (!user?.password) {
+    if (!user) {
       return NextResponse.json(
-        { error: 'Invalid credentials' }, 
+        { error: "Invalid credentials" }, 
         { status: 401 }
       );
     }
 
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) {
+    // Verify password
+    const passwordMatch = await bcrypt.compare(password, user.password);
+    if (!passwordMatch) {
       return NextResponse.json(
-        { error: 'Invalid credentials' },
+        { error: "Invalid credentials" }, 
         { status: 401 }
       );
     }
 
-    // 2. Now JWT_SECRET is guaranteed to be string
+    if (!process.env.JWT_SECRET) {
+      throw new Error("JWT_SECRET is not defined");
+    }
+
+    // Set expiration (30 days when rememberMe is true)
+    const expiresInSeconds = rememberMe ? 30 * 24 * 60 * 60 : 24 * 60 * 60;
     const token = jwt.sign(
-      { userId: user.id },
-      JWT_SECRET, // No more error!
-      { expiresIn: '1h' }
+      { userId: user.id }, 
+      process.env.JWT_SECRET!, 
+      { expiresIn: expiresInSeconds }
     );
 
-    return NextResponse.json({
-      token,
-      user: { id: user.id, name: user.name, email: user.email }
+    // Create response
+    const response = NextResponse.json({
+      user: { id: user.id, name: user.name, email: user.email },
+      expiresIn: expiresInSeconds,
+      rememberMe // Make sure this matches the input rememberMe
     });
 
+    // Set cookie
+    response.cookies.set({
+      name: 'auth_token',
+      value: token,
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: expiresInSeconds,
+      path: '/',
+      sameSite: 'strict'
+    });
+
+    return response;
   } catch (error) {
     console.error('Login error:', error);
     return NextResponse.json(
-      { error: 'Authentication failed' },
+      { error: "Internal server error" }, 
       { status: 500 }
     );
-  } finally {
-    await prisma.$disconnect();
   }
 }
