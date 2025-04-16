@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import StoreProvider from "./providers";
-import AuthHydration from "@/components/AuthHydration"; // Make sure this path is correct
+import AuthHydration from '@/components/AuthHydration'; // Ensure the path is correct
+import CheckAuth from "@/components/check-auth/page";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,12 +27,15 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+        <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         <StoreProvider>
           <AuthHydration />
-          {children}
+          <CheckAuth>
+            {children}
+          </CheckAuth>
         </StoreProvider>
       </body>
+
     </html>
   );
 }

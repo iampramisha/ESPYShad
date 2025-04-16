@@ -5,6 +5,7 @@ interface User {
   id: string;
   name: string;
   email: string;
+  role: string;
 }
 
 interface AuthState {
@@ -13,6 +14,7 @@ interface AuthState {
   loading: boolean;
   error: string | null;
   rememberMe: boolean;
+  isAuthenticated: boolean;
 }
 
 interface LoginPayload {
@@ -28,68 +30,67 @@ interface RegisterPayload {
   verificationCode?: string;
 }
 
-interface LoginResponse {
+interface AuthResponse {
   user: User;
   token: string;
-  expiresIn: number; // in seconds
+  expiresIn: number;
   rememberMe: boolean;
 }
 
-// Helper to check for window object
-const isBrowser = typeof window !== "undefined";
+const isBrowser = typeof window !== 'undefined';
 
-// Enhanced Auth Persistence Helper
 const AuthPersistence = {
   getStorage: (rememberMe: boolean) => {
     if (!isBrowser) return null;
     return rememberMe ? localStorage : sessionStorage;
   },
-  saveAuthData: (token: string, expiresIn: number, rememberMe: boolean) => {
+
+  saveAuthData: (token: string, expiresIn: number, rememberMe: boolean, role: string) => {
     if (!isBrowser) return;
-    
     const storage = rememberMe ? localStorage : sessionStorage;
     const expirationDate = new Date(Date.now() + expiresIn * 1000).toISOString();
-    
     storage.setItem('token', token);
     storage.setItem('token_expiration', expirationDate);
-  
-    // Only set rememberMe in localStorage if true
-    if (rememberMe) {
-      localStorage.setItem('rememberMe', 'true');
-    }
-  }
-  ,
+    storage.setItem('role', role);
+    if (rememberMe) localStorage.setItem('rememberMe', 'true');
+  },
+
   clearAuthData: () => {
     if (!isBrowser) return;
     localStorage.removeItem('rememberMe');
     localStorage.removeItem('token');
     localStorage.removeItem('token_expiration');
+    localStorage.removeItem('role');
     sessionStorage.removeItem('token');
     sessionStorage.removeItem('token_expiration');
+    sessionStorage.removeItem('role');
   },
 
   getInitialAuthState: (): Omit<AuthState, 'loading' | 'error'> => {
-    if (!isBrowser) return { user: null, token: null, rememberMe: false };
-
+    if (!isBrowser) return { user: null, token: null, rememberMe: false, isAuthenticated: false };
     const rememberMe = localStorage.getItem('rememberMe') === 'true';
     const storage = rememberMe ? localStorage : sessionStorage;
-    
     const token = storage.getItem('token');
     const expiration = storage.getItem('token_expiration');
+    const role = storage.getItem('role');
 
-    if (token && expiration) {
+    if (token && expiration && role) {
       const isExpired = new Date(expiration) < new Date();
       if (!isExpired) {
-        return { user: null, token, rememberMe };
+        return {
+          user: { id: '', name: '', email: '', role },
+          token,
+          rememberMe,
+          isAuthenticated: true
+        };
       }
       AuthPersistence.clearAuthData();
     }
 
-    return { user: null, token: null, rememberMe: false };
+    return { user: null, token: null, rememberMe: false, isAuthenticated: false };
   }
 };
 
-// Initial State
 const initialState: AuthState = {
   ...AuthPersistence.getInitialAuthState(),
   loading: false,
@@ -104,22 +105,20 @@ export const loginUser = createAsyncThunk(
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: payload.email,
-          password: payload.password,
-          rememberMe: payload.rememberMe // Ensure this is included
-        }),
+        body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Login failed');
-      
-      return data; // The API response already contains rememberMe
+      const data: AuthResponse = await response.json();
+      if (!response.ok) throw new Error(data as any);
+
+      AuthPersistence.saveAuthData(data.token, data.expiresIn, data.rememberMe, data.user.role);
+      return data;
     } catch (error: any) {
       return rejectWithValue(error.message || 'Login failed');
     }
   }
 );
+
 export const registerUser = createAsyncThunk(
   'auth/register',
   async (payload: RegisterPayload, { rejectWithValue }) => {
@@ -130,8 +129,10 @@ export const registerUser = createAsyncThunk(
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Registration failed');
+      const data: AuthResponse = await response.json();
+      if (!response.ok) throw new Error(data as any);
+
+      AuthPersistence.saveAuthData(data.token, data.expiresIn, data.rememberMe, data.user.role);
       return data;
     } catch (error: any) {
       return rejectWithValue(error.message || 'Registration failed');
@@ -140,15 +141,20 @@ export const registerUser = createAsyncThunk(
 );
 
 export const fetchUserData = createAsyncThunk(
-  'auth/fetchUser',
+  'auth/fetchUserData',
   async (_, { rejectWithValue }) => {
     try {
-      const response = await fetch('/api/auth/me');
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || 'Failed to fetch user');
-      return data.user;
-    } catch (error: any) {
-      return rejectWithValue(error.message || 'Failed to fetch user');
+      const data = AuthPersistence.getInitialAuthState();
+      if (data.user && data.token) {
+        return {
+          user: data.user,
+          token: data.token,
+          rememberMe: data.rememberMe
+        };
+      }
+      return rejectWithValue('No user data found');
+    } catch (error) {
+      return rejectWithValue('Failed to fetch user data');
     }
   }
 );
@@ -162,95 +168,71 @@ const authSlice = createSlice({
       state.user = null;
       state.token = null;
       state.rememberMe = false;
+      state.isAuthenticated = false;
       AuthPersistence.clearAuthData();
     },
-    clearError: (state) => {
-      state.error = null;
-    },
-    setRememberMe: (state, action: PayloadAction<boolean>) => {
-      state.rememberMe = action.payload;
-      if (isBrowser) {
-        action.payload
-          ? localStorage.setItem('rememberMe', 'true')
-          : localStorage.removeItem('rememberMe');
-      }
-    },
     hydrateAuth: (state) => {
-      const hydratedState = AuthPersistence.getInitialAuthState();
-      return { ...state, ...hydratedState };
+      const hydrated = AuthPersistence.getInitialAuthState();
+      return { ...state, ...hydrated };
     }
   },
   extraReducers: (builder) => {
     builder
+      // Login
       .addCase(loginUser.pending, (state) => {
         state.loading = true;
         state.error = null;
       })
-     // In your loginUser.fulfilled case
-.addCase(loginUser.fulfilled, (state, action: PayloadAction<LoginResponse>) => {
-  state.loading = false;
-  state.user = action.payload.user;
-  state.token = action.payload.token;
-  state.rememberMe = action.payload.rememberMe;
-  
-  // Clear all existing auth data first
-  AuthPersistence.clearAuthData();
-
-  // Only save data if rememberMe is true
-  if (action.payload.rememberMe) {
-    AuthPersistence.saveAuthData(
-      action.payload.token,
-      action.payload.expiresIn,
-      true
-    );
-  }
-})
+      .addCase(loginUser.fulfilled, (state, action: PayloadAction<AuthResponse>) => {
+        state.loading = false;
+        state.user = action.payload.user;
+        state.token = action.payload.token;
+        state.rememberMe = action.payload.rememberMe;
+        state.isAuthenticated = true;
+      })
       .addCase(loginUser.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload as string;
       })
+
+      // Register
       .addCase(registerUser.pending, (state) => {
         state.loading = true;
         state.error = null;
       })
-      .addCase(registerUser.fulfilled, (state, action: PayloadAction<{ user: User }>) => {
+      .addCase(registerUser.fulfilled, (state, action: PayloadAction<AuthResponse>) => {
         state.loading = false;
         state.user = action.payload.user;
+        state.token = action.payload.token;
+        state.rememberMe = action.payload.rememberMe;
+        state.isAuthenticated = true;
       })
       .addCase(registerUser.rejected, (state, action) => {
         state.loading = false;
         state.error = action.payload as string;
       })
+
+      // Hydration
       .addCase(fetchUserData.pending, (state) => {
         state.loading = true;
+        state.error = null;
       })
-      .addCase(fetchUserData.fulfilled, (state, action: PayloadAction<User>) => {
+      .addCase(fetchUserData.fulfilled, (state, action) => {
         state.loading = false;
-        state.user = action.payload;
+        state.user = action.payload.user;
+        state.token = action.payload.token;
+        state.rememberMe = action.payload.rememberMe;
+        state.isAuthenticated = true;
       })
-      .addCase(fetchUserData.rejected, (state) => {
+      .addCase(fetchUserData.rejected, (state, action) => {
         state.loading = false;
+        state.error = action.payload as string;
+        state.user = null;
+        state.token = null;
+        state.isAuthenticated = false;
       });
-  },
+  }
 });
 
-// Actions
-export const { logout, clearError, hydrateAuth, setRememberMe } = authSlice.actions;
-
-// Selectors
-export const selectCurrentUser = (state: { auth: AuthState }) => state.auth.user;
-export const selectAuthToken = (state: { auth: AuthState }) => state.auth.token;
-export const selectAuthLoading = (state: { auth: AuthState }) => state.auth.loading;
-export const selectAuthError = (state: { auth: AuthState }) => state.auth.error;
-export const selectRememberMe = (state: { auth: AuthState }) => state.auth.rememberMe;
-export const selectIsAuthenticated = (state: { auth: AuthState }) => {
-  if (!isBrowser || !state.auth.token) return false;
-  
-  const storage = AuthPersistence.getStorage(state.auth.rememberMe);
-  if (!storage) return false;
-
-  const expiration = storage.getItem('token_expiration');
-  return expiration ? new Date(expiration) > new Date() : false;
-};
-
+export const { logout, hydrateAuth } = authSlice.actions;
 export default authSlice.reducer;
